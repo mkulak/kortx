@@ -11,8 +11,8 @@ import java.net.URL
 import java.time.Duration
 import kotlin.concurrent.thread
 
-object AnalyzerServer : HttpApi({
-    post("/analyze", protect("uid")) { ctx ->
+class AnalyzerServer(oauth: OAuthProtector) : HttpApi({
+    post("/analyze", oauth.protect("uid")) { ctx ->
         ctx.request().bodyHandler { buffer ->
             val tweetJson = JsonObject(buffer.toString())
             ctx.response().endWithJson((tweetJson.getString("text").length % 2 == 0).toString())
@@ -37,20 +37,20 @@ val LOG = LoggerFactory.getLogger("App")
 fun main(args: Array<String>) {
     Json.mapper.registerKotlinModule()
 
-    val url = URL("http://localhost:8080")
     val vertx = Vertx.vertx()
 
     val httpClient = HttpClientImpl(vertx)
     thread {
         sleep(5000)
-        val analyzerClient = AnalyzerClientImpl(url, httpClient)
+        val analyzerClient = AnalyzerClientImpl(URL("http://localhost:8080"), httpClient)
         analyzerClient.analyze(Tweet("text", "user")).thenApply {
             println("analyze result: $it")
         }
     }
 
-    val router = AnalyzerServer.api(vertx)
+    val oauthProtector: OAuthProtector = TODO()
+    val router = AnalyzerServer(oauthProtector).api(vertx)
 
-    LOG.info("starting http server on $url")
-    vertx.createHttpServer().start(router, url)
+    LOG.info("starting http server on localhost:8080")
+    vertx.createHttpServer().start(router, "localhost", 8080)
 }
