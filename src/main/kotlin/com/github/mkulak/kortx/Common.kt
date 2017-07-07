@@ -19,6 +19,8 @@ fun <A> Future<A>.withErrorMessage(message: String): Future<A> {
     return future
 }
 
+fun <A> Future<A>.void(): Future<Unit> = thenApply { Unit }
+
 fun URL.withPath(path: String): URL = URL("$this$path")
 
 inline val Buffer.asJsonObj get() = JsonObject(toString())

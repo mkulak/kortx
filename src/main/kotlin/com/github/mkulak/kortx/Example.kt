@@ -48,7 +48,7 @@ fun main(args: Array<String>) {
         }
     }
 
-    val oauthProtector: OAuthProtector = TODO()
+    val oauthProtector = OAuthProtector(MockTokenInfoProvider())
     val router = AnalyzerServer(oauthProtector).api(vertx)
 
     LOG.info("starting http server on localhost:8080")

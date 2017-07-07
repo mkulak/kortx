@@ -1,3 +1,3 @@
 * implement token validation
-* generate new api for server code
+* convert parameters to declared type
 * proper responses on server

@@ -59,4 +59,8 @@ class MockHttpResponse(
     override fun bodyAsJsonObject(): JsonObject = body.asJsonObj
 }
 
+class MockTokenInfoProvider : TokenInfoProvider {
+    override fun hasScopes(token: String, scopes: List<String>) = true
+}
+
 
