@@ -72,7 +72,7 @@ class SwaggerGenerator {
         val clientInterface = TypeSpec.interfaceBuilder(interfaceName)
         swagger.paths.orEmpty().forEach { (pathStr, path) ->
             path.operationMap.orEmpty().forEach { (method, op) ->
-                clientInterface.addFun(swagger.createFun(pathStr, method, op, false).first.build())
+                clientInterface.addFun(swagger.createFun(pathStr, method, op, false).build())
             }
         }
         builder.addType(clientInterface.build())
@@ -87,7 +87,8 @@ class SwaggerGenerator {
                 .primaryConstructor(clientClassCtor.build())
         swagger.paths.orEmpty().forEach { (pathStr, path) ->
             path.operationMap.orEmpty().forEach { (method, op) ->
-                val (funBuilder, successType) = swagger.createFun(pathStr, method, op, true)
+                val funBuilder = swagger.createFun(pathStr, method, op, true)
+                val successType = swagger.getSuccessType(op)
                 val bodyParam = op.parameters.filterIsInstance(BodyParameter::class.java).firstOrNull()
                 val queryParams = op.parameters.filterIsInstance(QueryParameter::class.java)
                 val pathParams = op.parameters.filterIsInstance(PathParameter::class.java)
@@ -132,6 +133,8 @@ class SwaggerGenerator {
             val params = op.parameters.filter { it.`in` in setOf("query", "path") }
             val headers = op.parameters.filter { it.`in` == "header" && it.name != "Authorization" }
             val bodyParam = op.parameters.filterIsInstance(BodyParameter::class.java).firstOrNull()
+            val successCode = op.getSuccessCode()
+            val successType = swagger.getSuccessType(op)
             val req = "        val req = ctx.request()\n"
             val paramDecls = params.fold("") { acc, param ->
                 val type = if (param is QueryParameter && param.type == "integer") ".toInt()" else ""
@@ -140,19 +143,22 @@ class SwaggerGenerator {
             val headerDecls = headers.fold("") { acc, param ->
                 acc + "        val ${param.name.toCamelCase(false)} = req.getHeader(\"${param.name}\")\n"
             }
-            val body = if (bodyParam != null) "        req.bodyHandler { buffer ->\n        }\n" else ""
-            val response = " \n       ctx.response().endWithJson(\"ok\")\n"
+            val body = if (bodyParam != null) "        req.bodyHandler { buffer ->\n" else ""
+            val responseBodyDecl = if (successType.toString() != "Unit") "        val response: $successType = TODO()\n" else ""
+            val bodyEnd = if (bodyParam != null) "        }" else ""
+            val code = if (successCode != "200") ".setStatusCode($successCode)" else ""
+            val responseBody = if (successType.toString() != "Unit") ".endWithJson(response)" else ".end()"
+            val response = "\n        ctx.response()$code$responseBody\n"
             val suffix = "    }\n"
-            acc + route + req + paramDecls + headerDecls + body + response + suffix
+            acc + route + req + paramDecls + headerDecls + body + responseBodyDecl + bodyEnd + response + suffix
         }
         val suffix = "})\n"
         val code = "\n" + classDecl + routes + suffix
         println(code)
     }
 
-    private fun Swagger.createFun(pathStr: String, method: HttpMethod, op: Operation, override: Boolean): Pair<FunSpec.Builder, TypeName> {
-        val response = op.responses["200"] ?: op.responses["201"] ?: op.responses["202"] ?: op.responses["203"] ?: op.responses["204"]
-        val successType = resolveType(response?.schema, false)
+    private fun Swagger.createFun(pathStr: String, method: HttpMethod, op: Operation, override: Boolean): FunSpec.Builder {
+        val successType = getSuccessType(op)
         val funSpec = FunSpec.builder(getFunName(pathStr, method, op))
                 .addModifiers(KModifier.PUBLIC, if (override) KModifier.OVERRIDE else KModifier.ABSTRACT)
                 .returns(ParameterizedTypeName.get(ClassName("", "Future"), successType))
@@ -165,8 +171,15 @@ class SwaggerGenerator {
             }
             funSpec.addParameter(name.toCamelCase(false), type)
         }
-        return funSpec to successType
+        return funSpec
     }
+
+    private fun Swagger.getSuccessType(op: Operation): TypeName {
+        val schema = op.getSuccessCode()?.let { op.responses[it]?.schema }
+        return resolveType(schema, false)
+    }
+
+    private fun Operation.getSuccessCode() = responses.keys.find { it.startsWith("20") }
 
     private fun TypeSpec.Builder.addField(ctor: FunSpec.Builder, name: String, type: TypeName): TypeSpec.Builder {
         ctor.addParameter(name, type)

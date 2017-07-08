@@ -1,3 +1,2 @@
 * implement token validation
-* convert parameters to declared type
-* proper responses on server
+* send response headers on server
