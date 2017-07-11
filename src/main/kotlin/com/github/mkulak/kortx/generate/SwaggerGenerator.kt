@@ -89,9 +89,9 @@ class SwaggerGenerator {
             path.operationMap.orEmpty().forEach { (method, op) ->
                 val funBuilder = swagger.createFun(pathStr, method, op, true)
                 val successType = swagger.getSuccessType(op)
-                val bodyParam = op.parameters.filterIsInstance(BodyParameter::class.java).firstOrNull()
-                val queryParams = op.parameters.filterIsInstance(QueryParameter::class.java)
-                val pathParams = op.parameters.filterIsInstance(PathParameter::class.java)
+                val bodyParam = op.parameters.filterIsInstance<BodyParameter>().firstOrNull()
+                val queryParams = op.parameters.filterIsInstance<QueryParameter>()
+                val pathParams = op.parameters.filterIsInstance<PathParameter>()
                 val pathFixed = pathParams.fold(pathStr) { acc, param ->
                     acc.replace("{${param.name}}", "\${${param.name.toCamelCase(false)}}")
                 }
@@ -103,7 +103,7 @@ class SwaggerGenerator {
                     }.joinToString()
                     ".addParams(mapOf($queryMap))\n"
                 } else ""
-                val headerParams = op.parameters.filterIsInstance(HeaderParameter::class.java).filter { it.name != "Authorization" }
+                val headerParams = op.parameters.filterIsInstance<HeaderParameter>().filter { it.name != "Authorization" }
                 val headers = if (headerParams.isNotEmpty()) {
                     val headersMap = headerParams.map { """"${it.name}" to ${it.name.toCamelCase(false)}""" }.joinToString()
                     ".addHeaders(mapOf($headersMap))\n"
@@ -122,35 +122,41 @@ class SwaggerGenerator {
     }
 
     fun generateServer(serviceName: String, swagger: Swagger) {
-        val classDecl = "class ${serviceName}Server(oauth: OAuthProtector) : HttpApi({\n"
+        val t = " ".repeat(8)
+        val t4 = " ".repeat(4)
+        val classDecl = "class ${serviceName}Server(auth: Authenticator) : HttpApi({\n"
         val routes = swagger.paths.orEmpty().flatMap { (pathStr, path) ->
             path.operationMap.orEmpty().map { (method, op) -> Triple(pathStr, method, op) }
         }.fold("") { acc, (pathStr, method, op) ->
             val pathFixed = pathStr.replace("\\{([^}]+)\\}".toRegex(), ":$1")
             val oauthScopes = op.security.orEmpty().flatMap { it["oauth2"].orEmpty() }
-            val oauth = if (oauthScopes.isNotEmpty()) ", oauth.protect(${oauthScopes.map { "\"$it\"" }.joinToString(", ")}" else ""
-            val route = "${method.name.toLowerCase()}(\"$pathFixed\"$oauth) { ctx ->\n"
+            val auth = if (oauthScopes.isNotEmpty()) ", auth.protect(${oauthScopes.map { "\"$it\"" }.joinToString(", ")}" else ""
+            val route = "    ${method.name.toLowerCase()}(\"$pathFixed\"$auth) { ctx ->\n"
             val params = op.parameters.filter { it.`in` in setOf("query", "path") }
             val headers = op.parameters.filter { it.`in` == "header" && it.name != "Authorization" }
-            val bodyParam = op.parameters.filterIsInstance(BodyParameter::class.java).firstOrNull()
+            val bodyParam = op.parameters.filterIsInstance<BodyParameter>().firstOrNull()
             val successCode = op.getSuccessCode()
             val successType = swagger.getSuccessType(op)
-            val req = "        val req = ctx.request()\n"
+            val responseHeaders = op.responses[successCode]?.headers.orEmpty()
+            val req = "${t}val req = ctx.request()\n"
             val paramDecls = params.fold("") { acc, param ->
                 val type = if (param is QueryParameter && param.type == "integer") ".toInt()" else ""
-                acc + "        val ${param.name.toCamelCase(false)} = req.getParam(\"${param.name}\")$type\n"
+                acc + "${t}val ${param.name.toCamelCase(false)} = req.getParam(\"${param.name}\")$type\n"
             }
             val headerDecls = headers.fold("") { acc, param ->
-                acc + "        val ${param.name.toCamelCase(false)} = req.getHeader(\"${param.name}\")\n"
+                acc + "${t}val ${param.name.toCamelCase(false)} = req.getHeader(\"${param.name}\")\n"
             }
-            val body = if (bodyParam != null) "        req.bodyHandler { buffer ->\n" else ""
-            val responseBodyDecl = if (successType.toString() != "Unit") "        val response: $successType = TODO()\n" else ""
-            val bodyEnd = if (bodyParam != null) "        }" else ""
+            val body = if (bodyParam != null) "${t}req.bodyHandler { buffer ->\n" else ""
+            val requestBodyType = if (bodyParam != null) swagger.resolveType(bodyParam.schema).toString() else null
+            val requestBodyDecl = if (bodyParam != null) "${t + t4}val body = buffer.asJson<$requestBodyType>\n" else ""
+            val responseBodyDecl = if (successType.toString() != "Unit") "${t}val response: $successType = TODO()\n" else ""
+            val bodyEnd = if (bodyParam != null) "${t}}\n" else ""
             val code = if (successCode != "200") ".setStatusCode($successCode)" else ""
+            val putHeaders = responseHeaders.map { ".putHeader(\"${it.key}\", TODO())" }.joinToString("")
             val responseBody = if (successType.toString() != "Unit") ".endWithJson(response)" else ".end()"
-            val response = "\n        ctx.response()$code$responseBody\n"
+            val response = "${t + (bodyParam?.let{ t4 } ?: "")}ctx.response()$putHeaders$code$responseBody\n"
             val suffix = "    }\n"
-            acc + route + req + paramDecls + headerDecls + body + responseBodyDecl + bodyEnd + response + suffix
+            acc + route + req + paramDecls + headerDecls + body + requestBodyDecl + responseBodyDecl + response + bodyEnd + suffix
         }
         val suffix = "})\n"
         val code = "\n" + classDecl + routes + suffix
@@ -186,28 +192,40 @@ class SwaggerGenerator {
         return addProperty(PropertySpec.builder(name, type).initializer(name).build())
     }
 
-    private fun Swagger.resolveType(prop: Property?, nullable: Boolean = !(prop?.required ?: true)): TypeName {
-        val type = when (prop?.type) {
-            "ref" -> {
-                val name = (prop as RefProperty).`$ref`.extractRef().toCamelCase()
-                val model = definitions.orEmpty()[name]
-                if (model is ArrayModel) ParameterizedTypeName.get(ClassName("", "List"), resolveType(model.items, false))
-                else ClassName("", name)
+    private fun Swagger.resolveType(model: Model?, name: String? = null): TypeName {
+        return when (model) {
+            is ArrayModel -> ParameterizedTypeName.get(ClassName("", "List"), resolveType(model.items, false))
+            is RefModel -> {
+                val refName = model.`$ref`.extractRef()
+                resolveType(definitions.orEmpty()[refName], refName)
             }
-            "array" -> {
-                val items = (prop as ArrayProperty).items
+            else -> ClassName("", name ?: "Any")
+        }
+    }
+
+    private fun Swagger.resolveType(prop: Property?, nullable: Boolean = !(prop?.required ?: true)): TypeName {
+        val type = when (prop) {
+            is RefProperty -> {
+                val name = prop.`$ref`.extractRef().toCamelCase()
+                resolveType(definitions.orEmpty()[name], name)
+            }
+            is ArrayProperty -> {
+                val items = prop.items
                 ParameterizedTypeName.get(ClassName("", "List"), resolveType(items, false))
             }
-            "object" -> {
+            is ObjectProperty -> {
                 ClassName("", "Any")
             }
-            "number" -> ClassName("", "Int")
-            "integer" -> ClassName("", if (prop.format == "int64") "Long" else "Int")
-            "string" -> ClassName("", "String")
-            "boolean" -> ClassName("", "Boolean")
+            is IntegerProperty -> ClassName("", "Int")
+            is LongProperty -> ClassName("", "Long")
+            is StringProperty -> ClassName("", "String")
+            is BooleanProperty -> ClassName("", "Boolean")
+            is UUIDProperty -> ClassName("", "UUID")
+            is DateTimeProperty -> ClassName("", "ZonedDateTime")
+            is MapProperty -> resolveType(prop.getAdditionalProperties(), nullable)
             null -> ClassName("", "Unit")
             else -> {
-                println("Unsupported type ${prop.type}")
+                println("Unsupported type ${prop.type} $prop")
                 ClassName("", "Any")
             }
         }

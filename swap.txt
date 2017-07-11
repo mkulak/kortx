@@ -1,2 +1,5 @@
 * implement token validation
-* send response headers on server
+* support inline objects/array declarations
+
+            val responseHeaders = op.responses[successCode]?.headers
+            op.responses[successCode] - selection expands (from left to right but remains if right to left)

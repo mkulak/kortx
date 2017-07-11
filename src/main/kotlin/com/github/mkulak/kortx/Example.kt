@@ -11,7 +11,7 @@ import java.net.URL
 import java.time.Duration
 import kotlin.concurrent.thread
 
-class AnalyzerServer(oauth: OAuthProtector) : HttpApi({
+class AnalyzerServer(oauth: Authenticator) : HttpApi({
     post("/analyze", oauth.protect("uid")) { ctx ->
         ctx.request().bodyHandler { buffer ->
             val tweetJson = JsonObject(buffer.toString())
@@ -48,7 +48,7 @@ fun main(args: Array<String>) {
         }
     }
 
-    val oauthProtector = OAuthProtector(MockTokenInfoProvider())
+    val oauthProtector = Authenticator(MockTokenInfoProvider())
     val router = AnalyzerServer(oauthProtector).api(vertx)
 
     LOG.info("starting http server on localhost:8080")

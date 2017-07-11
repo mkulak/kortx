@@ -40,7 +40,7 @@ fun Router.delete(path: String, beforeHandler: Handler?, handler: Handler): Rout
 fun Router.option(path: String, beforeHandler: Handler?, handler: Handler): Route = route(HttpMethod.OPTIONS, path, beforeHandler, handler)
 
 
-class OAuthProtector(val provider: TokenInfoProvider) {
+class Authenticator(val provider: TokenInfoProvider) {
     fun protect(vararg scopes: String): Handler = { ctx: RoutingContext ->
         val token = ctx.request().getHeader("Authorization")
         if (token == null) ctx.response().setStatusCode(401).end("No authentication")
